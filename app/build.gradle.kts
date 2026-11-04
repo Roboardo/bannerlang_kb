@@ -9,6 +9,13 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
+val gitVersion = providers.exec {
+    commandLine("git", "describe", "--tags", "--match", "v[0-9]*")
+    isIgnoreExitValue = true
+}.standardOutput.asText.get().trim().removePrefix("v").ifEmpty { "0.0.0" }
+val versionParts = Regex("^(\\d+)\\.(\\d+)\\.(\\d+)").find(gitVersion)?.destructured
+    ?.toList()?.map { it.toInt() } ?: listOf(0, 0, 0)
+
 android {
     namespace = "net.bannerlang.kb"
     compileSdk = 35
@@ -18,8 +25,8 @@ android {
         applicationId = "net.bannerlang.kb"
         minSdk = 26
         targetSdk = 35
-        versionCode = 2
-        versionName = "0.1"
+        versionCode = maxOf(1, versionParts[0] * 1_000_000 + versionParts[1] * 1_000 + versionParts[2])
+        versionName = gitVersion
     }
 
     val releaseKey = file(System.getenv("RELEASE_KEY_PROPERTIES")

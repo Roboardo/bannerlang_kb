@@ -1,0 +1,108 @@
+name: Build
+
+on:
+  push:
+    branches: [master]
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version, like 1.2.0. Leave empty to only build."
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+concurrency:
+  group: build-${{ github.ref }}
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    env:
+      CERT_SHA256: 08c754a9e076da7fc1701f7d085f38952405cb4d6d90cff02d44db2d11f5f4eb
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Tag release
+        if: github.event_name == 'workflow_dispatch' && inputs.version != ''
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          echo "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || { echo "Version must look like 1.2.0"; exit 1; }
+          if git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null; then echo "v$VERSION already exists"; exit 1; fi
+          git tag "v$VERSION"
+          git push origin "v$VERSION"
+          echo "RELEASE_TAG=v$VERSION" >> "$GITHUB_ENV"
+
+      - name: Release tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: echo "RELEASE_TAG=$GITHUB_REF_NAME" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v6
+
+      - uses: actions/cache@v6
+        with:
+          path: ~/.gradle/caches/bannerlang_kb
+          key: client-jar-${{ hashFiles('app/build.gradle.kts') }}
+          restore-keys: client-jar-
+
+      - name: Signing key
+        env:
+          KEYSTORE_B64: ${{ secrets.RELEASE_KEYSTORE_B64 }}
+          KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
+        run: |
+          echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.p12"
+          printf 'storeFile=%s\nstorePassword=%s\nkeyAlias=release\nkeyPassword=%s\n' \
+            "$RUNNER_TEMP/release.p12" "$KEY_PASSWORD" "$KEY_PASSWORD" > "$RUNNER_TEMP/release.properties"
+          echo "RELEASE_KEY_PROPERTIES=$RUNNER_TEMP/release.properties" >> "$GITHUB_ENV"
+
+      - name: Build
+        run: ./gradlew assembleRelease
+
+      - name: Check signature
+        run: |
+          APK=app/build/outputs/apk/release/app-release.apk
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --print-certs "$APK" \
+            | grep -q "certificate SHA-256 digest: $CERT_SHA256" || { echo "APK isn't signed with the release key"; exit 1; }
+          VERSION=$(git describe --tags --match 'v[0-9]*' 2>/dev/null | sed 's/^v//')
+          mkdir -p dist
+          cp "$APK" "dist/bannerlang_kb-${VERSION:-0.0.0}.apk"
+          echo "APK=dist/bannerlang_kb-${VERSION:-0.0.0}.apk" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: apk
+          path: ${{ env.APK }}
+
+      - uses: actions/attest-build-provenance@v4
+        if: env.RELEASE_TAG != ''
+        with:
+          subject-path: ${{ env.APK }}
+
+      - name: Publish release
+        if: env.RELEASE_TAG != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          SHA=$(sha256sum "$APK" | cut -d' ' -f1)
+          CERT=$(echo "$CERT_SHA256" | tr a-f A-F | sed 's/../&:/g; s/:$//')
+          NAME=$(basename "$APK")
+          printf '%s\n' \
+            "APK SHA-256: \`$SHA\`" \
+            "" \
+            "Signing certificate SHA-256: \`$CERT\`" \
+            "" \
+            "Check that this APK was built here from this tag:" \
+            "\`gh attestation verify $NAME -R $GITHUB_REPOSITORY\`" > notes.md
+          gh release create "$RELEASE_TAG" "$APK" --title "$RELEASE_TAG" --notes-file notes.md
