@@ -1,0 +1,18 @@
+<resources>
+    <style name="AppTheme" parent="android:Theme.Material.NoActionBar">
+        <item name="android:colorAccent">#FF8AB4F8</item>
+        <item name="android:colorPrimary">#FF202124</item>
+        <item name="android:colorPrimaryDark">#FF202124</item>
+        <item name="android:windowBackground">#FF202124</item>
+        <item name="android:statusBarColor">#FF202124</item>
+        <item name="android:navigationBarColor">#FF202124</item>
+        <item name="android:alertDialogTheme">@style/DialogTheme</item>
+        <item name="android:dialogTheme">@style/DialogTheme</item>
+    </style>
+
+    <!-- dialogs on the same background as the screens -->
+    <style name="DialogTheme" parent="android:Theme.Material.Dialog.Alert">
+        <item name="android:colorBackground">#FF202124</item>
+        <item name="android:colorAccent">#FF8AB4F8</item>
+    </style>
+</resources>

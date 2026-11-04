@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android 12+. Only the user's data (languages and Write files); textures have to be picked again. -->
+<data-extraction-rules>
+    <cloud-backup>
+        <include domain="file" path="data.json" />
+        <include domain="file" path="files/" />
+    </cloud-backup>
+    <device-transfer>
+        <include domain="file" path="data.json" />
+        <include domain="file" path="files/" />
+    </device-transfer>
+</data-extraction-rules>
