@@ -98,6 +98,11 @@ class SettingsActivity : Activity() {
         content.addView(label(if (Repo.frequentFirst) "Suggestions prioritize frequently used words"
             else "Suggestions prioritize shorter words"), lpTop(2))
 
+        content.addView(switch(Repo.illegalOutline, "Outline invalid banners") {
+            Repo.illegalOutline = it; rebuild()
+        }.apply { textSize = 18f }, lpTop(24))
+        content.addView(label("Outline banners with more than 6 patterns"), lpTop(2))
+
         section("Backup", "Languages, banners, words, walls and settings as a file.")
         content.addView(FlowLayout(this, dpi(8)).apply {
             addView(textButton("Export") { pickFile(true, EXPORT) })

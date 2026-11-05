@@ -84,7 +84,7 @@ class Language(
         val infix = words.filter { w ->
             w !in prefix && w.spellings.any { s -> (1..s.size - seq.size).any { s.subList(it, it + seq.size) == seq } }
         }
-        return if (byUses) (prefix + infix).sortedByDescending { it.uses } else prefix + infix
+        return if (byUses) prefix.sortedByDescending { it.uses } + infix.sortedByDescending { it.uses } else prefix + infix
     }
 }
 
@@ -122,6 +122,11 @@ object Repo {
         get() = frequentFirstValue
         set(v) { frequentFirstValue = v; save() }
     private var frequentFirstValue = true
+
+    var illegalOutline: Boolean
+        get() = illegalOutlineValue
+        set(v) { illegalOutlineValue = v; save() }
+    private var illegalOutlineValue = true
 
     var version = 0
         private set
@@ -161,12 +166,14 @@ object Repo {
         .put("scale", exportScale)
         .put("chatWidth", chatWidth)
         .put("frequentFirst", frequentFirst)
+        .put("illegalOutline", illegalOutline)
 
     fun readSettings(o: JSONObject) {
         if (o.has("output")) Output.entries.find { it.key == o.optString("output") }?.let { outputValue = it }
         if (o.has("scale")) o.optInt("scale", 1).takeIf { it in BannerRenderer.EXPORT_SCALES }?.let { exportScaleValue = it }
         if (o.has("chatWidth")) o.optInt("chatWidth", 0).takeIf { it in BannerRenderer.CHAT_WIDTHS }?.let { chatWidthValue = it }
         if (o.has("frequentFirst")) frequentFirstValue = o.optBoolean("frequentFirst", true)
+        if (o.has("illegalOutline")) illegalOutlineValue = o.optBoolean("illegalOutline", true)
     }
 
     private fun load() {

@@ -95,7 +95,7 @@ object BannerRenderer {
         canvas.drawBitmap(bitmap(banner), src, dst, pixelPaint)
         if (!outline) return
         val w = (dst.width() / 40f).coerceAtLeast(1f)
-        if (illegal(banner)) {
+        if (Repo.illegalOutline && illegal(banner)) {
             illegalPaint.strokeWidth = w * 1.5f
             canvas.drawRect(RectF(dst).apply { inset(w * .75f, w * .75f) }, illegalPaint)
         } else {
