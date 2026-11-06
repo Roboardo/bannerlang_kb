@@ -79,12 +79,14 @@ class Language(
     fun suggestions(seq: List<String>, byUses: Boolean = true): List<Word> {
         if (seq.isEmpty()) return emptyList()
         fun startsWith(s: List<String>) = s.size >= seq.size && s.subList(0, seq.size) == seq
-        val prefix = words.filter { w -> w.spellings.any { startsWith(it) } }
+        val exact = words.filter { w -> w.spellings.any { it == seq } }
+        val prefix = words.filter { w -> w !in exact && w.spellings.any { startsWith(it) } }
             .sortedBy { w -> w.spellings.filter { startsWith(it) }.minOf { it.size } }
         val infix = words.filter { w ->
-            w !in prefix && w.spellings.any { s -> (1..s.size - seq.size).any { s.subList(it, it + seq.size) == seq } }
+            w !in exact && w !in prefix && w.spellings.any { s -> (1..s.size - seq.size).any { s.subList(it, it + seq.size) == seq } }
         }
-        return if (byUses) prefix.sortedByDescending { it.uses } + infix.sortedByDescending { it.uses } else prefix + infix
+        return if (byUses) exact.sortedByDescending { it.uses } + prefix.sortedByDescending { it.uses } + infix.sortedByDescending { it.uses }
+        else exact + prefix + infix
     }
 }
 
