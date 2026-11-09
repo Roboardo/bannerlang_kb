@@ -59,6 +59,8 @@ class KeyboardPanel(ctx: Context, private val host: Host, embedPreview: Boolean 
             onSelect = { a, b -> commitComposing(); msg.select(a, b); refresh() }
             onHold = { x, y -> showSelectionMenu(RectF(x, y, x, y)) }
             onSelectEnd = { showSelectionMenu() }
+            onDragStart = { selectionMenu?.dismiss() }
+            onMove = { g -> msg.moveSelection(g); refresh() }
         }
         suggestionRow = LinearLayout(ctx).apply {
             gravity = Gravity.CENTER_VERTICAL

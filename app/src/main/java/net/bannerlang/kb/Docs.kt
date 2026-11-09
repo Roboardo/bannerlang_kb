@@ -1,9 +1,12 @@
 package net.bannerlang.kb
 
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.util.concurrent.Executors
 
 class Doc(val id: String, var columns: Int, var rtl: Boolean, var lines: List<List<Banner?>>,
           var modified: Long = 0, var pageLines: Int = 0, var pageGap: Boolean = false,
@@ -42,20 +45,41 @@ class Doc(val id: String, var columns: Int, var rtl: Boolean, var lines: List<Li
 object Docs {
     private fun dir(ctx: Context) = File(ctx.filesDir, "files").apply { mkdirs() }
 
-    fun list(ctx: Context): List<Doc> = dir(ctx).listFiles { f -> f.name.endsWith(".json") }.orEmpty()
-        .mapNotNull { f -> try { Doc.fromJson(f.name.removeSuffix(".json"), f.readText(), f.lastModified()) } catch (_: Exception) { null } }
-        .sortedByDescending { it.modified }
+
+    fun list(ctx: Context): List<Doc> = io.submit<List<Doc>> {
+        dir(ctx).listFiles { f -> f.name.endsWith(".json") }.orEmpty()
+            .mapNotNull { f -> try { Doc.fromJson(f.name.removeSuffix(".json"), f.readText(), f.lastModified()) } catch (_: Exception) { null } }
+            .sortedByDescending { it.modified }
+    }.get()
 
     fun load(ctx: Context, id: String): Doc? = list(ctx).firstOrNull { it.id == id }
 
-    fun save(ctx: Context, d: Doc) {
-        val f = File(dir(ctx), "${d.id}.json")
+    private val io = Executors.newSingleThreadExecutor()
+    private val main = Handler(Looper.getMainLooper())
+
+    private fun write(ctx: Context, id: String, json: String): Long {
+        val f = File(dir(ctx), "$id.json")
         val tmp = File(f.parentFile, f.name + ".tmp")
-        tmp.writeText(d.toJson())
+        tmp.writeText(json)
         tmp.renameTo(f)
-        d.modified = f.lastModified()
+        return f.lastModified()
+    }
+
+    fun save(ctx: Context, d: Doc) {
+        val json = d.toJson()
+        d.modified = io.submit<Long> { write(ctx, d.id, json) }.get()
         Backup.onSaved()
     }
 
-    fun delete(ctx: Context, id: String) = File(dir(ctx), "$id.json").delete().also { Backup.onSaved() }
+    fun saveInBackground(ctx: Context, d: Doc) {
+        val json = d.toJson()
+        val app = ctx.applicationContext
+        io.execute {
+            val t = write(app, d.id, json)
+            main.post { d.modified = t; Backup.onSaved() }
+        }
+    }
+
+    fun delete(ctx: Context, id: String) =
+        io.submit<Boolean> { File(dir(ctx), "$id.json").delete() }.get().also { Backup.onSaved() }
 }

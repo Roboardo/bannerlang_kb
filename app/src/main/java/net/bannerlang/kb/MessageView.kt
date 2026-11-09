@@ -6,7 +6,9 @@ import android.graphics.Paint
 import android.graphics.RectF
 import android.os.SystemClock
 import android.view.MotionEvent
+import android.view.VelocityTracker
 import android.view.ViewConfiguration
+import android.widget.OverScroller
 import android.view.View
 import kotlin.math.abs
 
@@ -17,6 +19,8 @@ class MessageView(ctx: Context) : View(ctx) {
     var onSelect: (Int, Int) -> Unit = { _, _ -> }
     var onHold: (Float, Float) -> Unit = { _, _ -> }
     var onSelectEnd: () -> Unit = {}
+    var onDragStart: () -> Unit = {}
+    var onMove: (Int) -> Unit = {}
     var rtl = false
     var keepWords = false
         set(v) { field = v; invalidate() }
@@ -49,6 +53,9 @@ class MessageView(ctx: Context) : View(ctx) {
     private var endLine = 0
 
     private var scroll = 0f
+    private var maxScroll = 0f
+    private val scroller = OverScroller(ctx)
+    private var velocity: VelocityTracker? = null
     private var followCursor = true
 
     init {
@@ -67,7 +74,7 @@ class MessageView(ctx: Context) : View(ctx) {
         invalidate()
     }
 
-    private fun heightFor(lines: Int) = pad * 2 + (lines - 1) * lineH + bh
+    private fun heightFor(lines: Int) = lineY(lines - 1) + bh + pad
 
     override fun onMeasure(widthSpec: Int, heightSpec: Int) {
         val w = MeasureSpec.getSize(widthSpec)
@@ -119,15 +126,28 @@ class MessageView(ctx: Context) : View(ctx) {
     private fun gapPos(g: Int): Pair<Float, Int> =
         if (g < items.size) xs[g] to ls[g] else endX to endLine
 
-    private fun lineTop(line: Int) = pad + line * lineH - scroll
+    private val pageSpace get() = if (pageLines > 0) bh / 2 else 0f
+
+    private fun lineY(line: Int): Float =
+        pad + line * lineH + if (pageLines > 0 && line > 0) (line / pageLines) * pageSpace else 0f
+
+    private fun lineAt(y: Float): Int {
+        if (pageLines <= 0) return ((y - pad) / lineH).toInt()
+        val pageH = pageLines * lineH + pageSpace
+        val page = ((y - pad) / pageH).toInt()
+        val inPage = ((y - pad - page * pageH) / lineH).toInt().coerceAtMost(pageLines - 1)
+        return page * pageLines + inPage
+    }
+
+    private fun lineTop(line: Int) = lineY(line) - scroll
 
     override fun onDraw(canvas: Canvas) {
         layoutItems(width)
         val contentH = heightFor(endLine + 1)
-        val maxScroll = (contentH - height).coerceAtLeast(0f)
+        maxScroll = (contentH - height).coerceAtLeast(0f)
         if (followCursor) {
             val cl = gapPos(cursorGap).second
-            val top = pad + cl * lineH
+            val top = lineY(cl)
             if (top - pad < scroll) scroll = top - pad
             if (top + bh + pad > scroll + height) scroll = top + bh + pad - height
             followCursor = false
@@ -135,17 +155,18 @@ class MessageView(ctx: Context) : View(ctx) {
         scroll = scroll.coerceIn(0f, maxScroll)
 
         if (columns > 0) {
-            val first = (scroll / lineH).toInt().coerceAtLeast(0)
-            for (line in first..first + (height / lineH).toInt() + 1) {
+            var line = lineAt(scroll).coerceAtLeast(0)
+            while (lineTop(line) < height) {
                 val t = lineTop(line)
                 for (c in 0 until columns) {
                     val l = pad + c * (bw + gap)
                     canvas.drawRect(l, t, l + bw, t + bh, guide)
                 }
                 if (pageLines > 0 && line > 0 && line % pageLines == 0) {
-                    val y = t - (lineH - bh) / 2
+                    val y = t - (lineH - bh + pageSpace) / 2
                     canvas.drawLine(pad, y, width - pad, y, pageLine)
                 }
+                line++
             }
         }
         val sel = message.hasSelection && composing.isEmpty()
@@ -154,9 +175,11 @@ class MessageView(ctx: Context) : View(ctx) {
             if (t + lineH < 0 || t > height) return@forEachIndexed
             val w = width(it)
             val l = vx(xs[i], w)
-            if (sel && i >= message.selStart && i < message.selEnd) {
+            val inSel = sel && i >= message.selStart && i < message.selEnd
+            if (inSel) {
                 canvas.drawRect(l - gap / 2, t - dp(3f), l + w + gap / 2, t + bh + dp(3f), selPaint)
             }
+            if (inSel && dragging) canvas.saveLayerAlpha(l - gap, t - dp(4f), l + w + gap, t + bh + dp(6f), 90)
             when (it.kind) {
                 Kind.BANNER -> {
                     BannerRenderer.draw(canvas, it.banner!!, RectF(l, t, l + bw, t + bh))
@@ -174,7 +197,9 @@ class MessageView(ctx: Context) : View(ctx) {
                     canvas.restore()
                 }
             }
+            if (inSel && dragging) canvas.restore()
         }
+        if (dragging) drawDrag(canvas)
 
         if (!sel && (SystemClock.uptimeMillis() / 530) % 2 == 0L) {
             val (cx, cl) = gapPos(cursorGap)
@@ -200,9 +225,32 @@ class MessageView(ctx: Context) : View(ctx) {
         return r
     }
 
+    private fun drawDrag(canvas: Canvas) {
+        if (dropGap < message.selStart || dropGap > message.selEnd) {
+            val (cx, cl) = gapPos(dropGap)
+            val t = lineTop(cl)
+            val x = vx(cx - gap / 2)
+            canvas.drawRect(x - dp(1.5f), t - dp(4f), x + dp(1.5f), t + bh + dp(4f), accent)
+        }
+        val s = 0.8f
+        val w = bw * s; val h = bh * s
+        val n = minOf(message.selEnd - message.selStart, ((width - pad * 2) / (w + gap)).toInt().coerceAtLeast(1))
+        val total = n * w + (n - 1) * gap
+        var l = (dragX - total / 2).coerceIn(pad, maxOf(pad, width - pad - total))
+        val t = (dragY - h - dp(24f)).coerceAtLeast(0f)
+        canvas.saveLayerAlpha(0f, 0f, width.toFloat(), height.toFloat(), 200)
+        for (k in 0 until n) {
+            val idx = message.selStart + k
+            val it = items[if (rtl) message.selEnd - 1 - k else idx]
+            if (it.kind == Kind.BANNER) BannerRenderer.draw(canvas, it.banner!!, RectF(l, t, l + w, t + h))
+            l += w + gap
+        }
+        canvas.restore()
+    }
+
     private fun gapAt(rawX: Float, y: Float): Int {
         val x = vx(rawX)
-        val line = ((y + scroll - pad) / lineH).toInt().coerceAtLeast(0)
+        val line = lineAt(y + scroll).coerceAtLeast(0)
         if (line > endLine) return items.size
         var best = -1
         var bestD = Float.MAX_VALUE
@@ -220,7 +268,7 @@ class MessageView(ctx: Context) : View(ctx) {
 
     private fun itemAt(rawX: Float, y: Float): Int {
         val x = vx(rawX)
-        val line = ((y + scroll - pad) / lineH).toInt()
+        val line = if (y + scroll < pad) -1 else lineAt(y + scroll)
         for (i in items.indices) if (ls[i] == line && x >= xs[i] && x < xs[i] + width(items[i]) + gap) return i
         return -1
     }
@@ -232,29 +280,56 @@ class MessageView(ctx: Context) : View(ctx) {
     private var moved = false
     private var selecting = false
     private var held = false
+    private var dragging = false
+    private var dropGap = 0
+    private var dragX = 0f
+    private var dragY = 0f
     private var selAnchorItem = 0
     private val longPress = Runnable {
         val i = itemAt(downX, downY)
         if (moved) return@Runnable
         performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
-        if (i >= 0) {
+        if (i >= 0 && message.hasSelection && composing.isEmpty() && i >= message.selStart && i < message.selEnd) {
+            dragging = true
+            dropGap = message.selStart
+            dragX = downX; dragY = downY
+            onDragStart()
+            invalidate()
+        } else if (i >= 0) {
             selecting = true
             selAnchorItem = i
             onSelect(i, i + 1)
         } else {
             held = true
+            onTap(gapAt(downX, downY))
+        }
+    }
+
+    override fun computeScroll() {
+        if (scroller.computeScrollOffset()) {
+            scroll = scroller.currY.toFloat()
+            postInvalidateOnAnimation()
         }
     }
 
     override fun onTouchEvent(e: MotionEvent): Boolean {
+        if (e.actionMasked == MotionEvent.ACTION_DOWN) velocity?.clear()
+        val vt = velocity ?: VelocityTracker.obtain().also { velocity = it }
+        vt.addMovement(e)
         when (e.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
+                scroller.forceFinished(true)
                 downX = e.x; downY = e.y; lastY = e.y
-                moved = false; selecting = false; held = false
+                moved = false; selecting = false; held = false; dragging = false
                 postDelayed(longPress, ViewConfiguration.getLongPressTimeout().toLong())
             }
             MotionEvent.ACTION_MOVE -> {
-                if (selecting) {
+                if (dragging) {
+                    dragX = e.x; dragY = e.y
+                    dropGap = gapAt(e.x, e.y)
+                    if (e.y < 0) scroll -= lineH / 4 else if (e.y > height) scroll += lineH / 4
+                    invalidate()
+                } else if (selecting) {
                     val g = gapAt(e.x, e.y)
                     if (g > selAnchorItem) onSelect(selAnchorItem, g) else onSelect(selAnchorItem + 1, g)
                     if (e.y < 0) scroll -= lineH / 4 else if (e.y > height) scroll += lineH / 4
@@ -273,12 +348,27 @@ class MessageView(ctx: Context) : View(ctx) {
             }
             MotionEvent.ACTION_UP -> {
                 removeCallbacks(longPress)
-                if (!moved && !selecting && !held) { onTap(gapAt(e.x, e.y)); performClick() }
+                if (!moved && !selecting && !held && !dragging) { onTap(gapAt(e.x, e.y)); performClick() }
+                if (dragging) {
+                    dragging = false
+                    if (dropGap < message.selStart || dropGap > message.selEnd) onMove(dropGap)
+                    invalidate()
+                    onSelectEnd()
+                }
                 if (selecting) onSelectEnd()
                 if (held) onHold(downX, downY)
+                if (moved && !selecting && !dragging) {
+                    val vc = ViewConfiguration.get(context)
+                    vt.computeCurrentVelocity(1000, vc.scaledMaximumFlingVelocity.toFloat())
+                    val vy = vt.yVelocity
+                    if (abs(vy) > vc.scaledMinimumFlingVelocity) {
+                        scroller.fling(0, scroll.toInt(), 0, -vy.toInt(), 0, 0, 0, maxScroll.toInt())
+                        postInvalidateOnAnimation()
+                    }
+                }
                 selecting = false
             }
-            MotionEvent.ACTION_CANCEL -> { removeCallbacks(longPress); selecting = false }
+            MotionEvent.ACTION_CANCEL -> { removeCallbacks(longPress); selecting = false; dragging = false; invalidate() }
         }
         return true
     }

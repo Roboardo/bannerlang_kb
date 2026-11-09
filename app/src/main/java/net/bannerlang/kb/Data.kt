@@ -130,6 +130,11 @@ object Repo {
         set(v) { illegalOutlineValue = v; save() }
     private var illegalOutlineValue = true
 
+    var wallAutosave: Boolean
+        get() = wallAutosaveValue
+        set(v) { wallAutosaveValue = v; save() }
+    private var wallAutosaveValue = false
+
     var version = 0
         private set
 
@@ -169,6 +174,7 @@ object Repo {
         .put("chatWidth", chatWidth)
         .put("frequentFirst", frequentFirst)
         .put("illegalOutline", illegalOutline)
+        .put("wallAutosave", wallAutosave)
 
     fun readSettings(o: JSONObject) {
         if (o.has("output")) Output.entries.find { it.key == o.optString("output") }?.let { outputValue = it }
@@ -176,6 +182,7 @@ object Repo {
         if (o.has("chatWidth")) o.optInt("chatWidth", 0).takeIf { it in BannerRenderer.CHAT_WIDTHS }?.let { chatWidthValue = it }
         if (o.has("frequentFirst")) frequentFirstValue = o.optBoolean("frequentFirst", true)
         if (o.has("illegalOutline")) illegalOutlineValue = o.optBoolean("illegalOutline", true)
+        if (o.has("wallAutosave")) wallAutosaveValue = o.optBoolean("wallAutosave", false)
     }
 
     private fun load() {

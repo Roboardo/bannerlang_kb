@@ -42,6 +42,16 @@ class Message {
         return true
     }
 
+    fun moveSelection(to: Int) {
+        val s = selStart; val e = selEnd
+        if (to in s..e) return
+        val block = tokens.subList(s, e).toList()
+        repeat(e - s) { tokens.removeAt(s) }
+        val t = if (to > e) to - block.size else to
+        tokens.addAll(t, block)
+        select(t, t + block.size)
+    }
+
     fun backspace() {
         if (deleteSelection() || cursor == 0) return
         tokens.removeAt(cursor - 1)

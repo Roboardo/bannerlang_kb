@@ -4,8 +4,12 @@ import android.app.Activity
 import android.app.AlertDialog
 import android.content.Intent
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.os.SystemClock
 import android.view.Gravity
 import android.view.View
+import android.widget.ImageButton
 import android.widget.LinearLayout
 import android.widget.NumberPicker
 import android.widget.RadioButton
@@ -28,6 +32,10 @@ class WriteActivity : Activity(), KeyboardPanel.Host, Backup.Listener {
     private var pageLines = 0
     private var pageGap = false
     private var saved = ""
+    private lateinit var saveButton: ImageButton
+    private val handler = Handler(Looper.getMainLooper())
+    private val autosaveRun = Runnable { autosave() }
+    private var pendingSince = 0L
 
     override val isIme = false
 
@@ -49,7 +57,10 @@ class WriteActivity : Activity(), KeyboardPanel.Host, Backup.Listener {
             fun icon(res: Int, desc: String, onClick: () -> Unit) =
                 addView(iconButton(res, desc) { onClick() }, lpIcon().apply { leftMargin = dpi(4) })
             icon(R.drawable.ic_folder, "Walls") { files() }
-            icon(R.drawable.ic_save, "Save") { save {} }
+            saveButton = iconButton(R.drawable.ic_save, "Save") { save { toast("Saved, hold to toggle autosave") } }.apply {
+                setOnLongClickListener { toggleAutosave(); true }
+            }
+            addView(saveButton, lpIcon().apply { leftMargin = dpi(4) })
             icon(R.drawable.ic_share, "Export") { export() }
             icon(R.drawable.ic_grid, "Grid") { pickGrid() }
         }
@@ -69,7 +80,9 @@ class WriteActivity : Activity(), KeyboardPanel.Host, Backup.Listener {
             addView(panel, lp(MATCH, WRAP))
             padForSystemBars(top = true)
         })
-        panel.onChanged = { if (naming == null) updateTitle() }
+        panel.onChanged = { if (naming == null) { updateTitle(); scheduleAutosave() } }
+        showAutosave()
+        panel.messageView.setOnClickListener { showKeyboard(true) }
         val d = intent.getStringExtra(OPEN)?.let { Docs.load(this, it) } ?: Docs.list(this).firstOrNull()
         if (d != null && intent.getStringExtra(START) != START_NEW) open(d) else newFile()
     }
@@ -79,7 +92,56 @@ class WriteActivity : Activity(), KeyboardPanel.Host, Backup.Listener {
         panel.reloadLanguage()
     }
 
+    override fun onPause() {
+        super.onPause()
+        flushAutosave()
+    }
+
+    override fun onDestroy() {
+        handler.removeCallbacks(autosaveRun)
+        super.onDestroy()
+    }
+
     override fun onSynced() = panel.reloadLanguage()
+
+    private fun showAutosave() {
+        saveButton.imageTintList = android.content.res.ColorStateList.valueOf(if (Repo.wallAutosave) Ui.ACCENT else Ui.TEXT)
+        saveButton.contentDescription = if (Repo.wallAutosave) "Save (autosave on)" else "Save"
+    }
+
+    private fun toggleAutosave() {
+        Repo.wallAutosave = !Repo.wallAutosave
+        showAutosave()
+        toast(when {
+            !Repo.wallAutosave -> "Autosave off"
+            doc == null -> "Autosave on after the first save"
+            else -> "Autosave on"
+        })
+        if (Repo.wallAutosave) scheduleAutosave() else { handler.removeCallbacks(autosaveRun); pendingSince = 0 }
+    }
+
+    private fun scheduleAutosave() {
+        if (!Repo.wallAutosave || doc == null || naming != null || !dirty) return
+        val now = SystemClock.uptimeMillis()
+        if (pendingSince == 0L) pendingSince = now
+        handler.removeCallbacks(autosaveRun)
+        handler.postDelayed(autosaveRun, minOf(AUTOSAVE_IDLE, AUTOSAVE_MAX - (now - pendingSince)).coerceAtLeast(0))
+    }
+
+    private fun autosave() {
+        pendingSince = 0
+        val d = doc ?: return
+        if (!Repo.wallAutosave || naming != null || !dirty) return
+        writeDoc(d)
+        Docs.saveInBackground(this, d)
+        updateTitle()
+    }
+
+    private fun flushAutosave() {
+        if (pendingSince == 0L) return
+        handler.removeCallbacks(autosaveRun)
+        autosave()
+    }
 
     private fun snapshot() = Doc("", columns, false, msg.lines(), 0, pageLines, pageGap).toJson()
     private val dirty get() = snapshot() != saved
@@ -91,6 +153,8 @@ class WriteActivity : Activity(), KeyboardPanel.Host, Backup.Listener {
     }
 
     private fun open(d: Doc?) {
+        handler.removeCallbacks(autosaveRun)
+        pendingSince = 0
         doc = d
         columns = d?.columns ?: Doc.DEFAULT_COLUMNS
         pageLines = d?.pageLines ?: 0
@@ -108,9 +172,19 @@ class WriteActivity : Activity(), KeyboardPanel.Host, Backup.Listener {
 
     private fun newFile() = open(null)
 
+    private val keyboardShown get() = panel.visibility == View.VISIBLE
+
+    private fun showKeyboard(show: Boolean) {
+        if (show == keyboardShown) return
+        if (!show) { panel.commitComposing(); panel.refresh() }
+        panel.visibility = if (show) View.VISIBLE else View.GONE
+    }
+
     private fun confirmLeave(then: () -> Unit) {
         panel.commitComposing()
+        panel.refresh()
         if (!dirty) { then(); return }
+        if (Repo.wallAutosave && doc != null && naming == null) { save(then); return }
         AlertDialog.Builder(this)
             .setMessage("Save changes to ${if (doc == null) "the new wall" else "this wall"}?")
             .setPositiveButton("Save") { _, _ -> save(then) }
@@ -132,6 +206,7 @@ class WriteActivity : Activity(), KeyboardPanel.Host, Backup.Listener {
         panel.messageView.pageLines = 0
         bar.visibility = View.GONE
         nameBar.visibility = View.VISIBLE
+        showKeyboard(true)
         panel.refresh()
     }
 
@@ -163,15 +238,21 @@ class WriteActivity : Activity(), KeyboardPanel.Host, Backup.Listener {
             }
             return
         }
+        handler.removeCallbacks(autosaveRun)
+        pendingSince = 0
+        writeDoc(d)
+        Docs.save(this, d)
+        panel.refresh()
+        then()
+    }
+
+    private fun writeDoc(d: Doc) {
         d.columns = columns
         d.pageLines = pageLines
         d.pageGap = pageGap
         d.rtl = panel.lang?.rtl == true
         d.lines = msg.lines()
-        Docs.save(this, d)
         saved = snapshot()
-        panel.refresh()
-        then()
     }
 
     private fun rename() {
@@ -228,6 +309,7 @@ class WriteActivity : Activity(), KeyboardPanel.Host, Backup.Listener {
                 panel.messageView.columns = columns
                 panel.messageView.pageLines = pageLines
                 updateTitle()
+                scheduleAutosave()
             }
             .setNegativeButton("Cancel", null)
             .show()
@@ -275,6 +357,7 @@ class WriteActivity : Activity(), KeyboardPanel.Host, Backup.Listener {
     override fun onBackPressed() {
         if (panel.editorOpen) { panel.closeEditor(); return }
         if (naming != null) { endNaming(false); return }
+        if (keyboardShown) { showKeyboard(false); return }
         confirmLeave { finish() }
     }
 
@@ -288,5 +371,7 @@ class WriteActivity : Activity(), KeyboardPanel.Host, Backup.Listener {
         const val START = "start"
         const val START_NEW = "new"
         const val OPEN = "open"
+        private const val AUTOSAVE_IDLE = 1500L
+        private const val AUTOSAVE_MAX = 10_000L
     }
 }
